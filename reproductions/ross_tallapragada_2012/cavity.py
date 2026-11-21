@@ -70,6 +70,18 @@ def period_map(X, Y, half, nper, nstep):
 
 
 @njit(parallel=True, cache=True)
+def _seg(X, Y, U1, dt, n):
+    Xo = np.empty_like(X); Yo = np.empty_like(Y)
+    for i in prange(X.size):
+        Xo[i], Yo[i] = steady(X[i], Y[i], U1, dt, n)
+    return Xo, Yo
+
+
+def flow_seg(X, Y, U1, dt):
+    return _seg(X, Y, U1, dt, max(1, int(np.ceil(dt * 100))))
+
+
+@njit(parallel=True, cache=True)
 def flow_t(X, Y, half, t, nstep_per_unit):
     """Flow from 0 to t (any t >= 0) through the piecewise-steady protocol."""
     Xo = np.empty_like(X); Yo = np.empty_like(Y)
@@ -247,19 +259,28 @@ def stage_anim(nfr=240, per=3):
     sq = (np.abs(g.cx - 1.7) < 0.35) & (np.abs(g.cy - 0.1) < 0.35) & ~np.isin(lab, big)
     sets.append(sq)
     cols = [(0.85, 0.1, 0.1), (0.1, 0.45, 0.85), (0.1, 0.65, 0.2), (0.45, 0.45, 0.45)]
-    P0 = [(g.X[m].ravel(), g.Y[m].ravel()) for m in sets]
+    P0 = [(g.X[m].ravel().copy(), g.Y[m].ravel().copy()) for m in sets]
     fig, ax = plt.subplots(figsize=(9, 3.4)); fig.subplots_adjust(0.04, 0.08, 0.99, 0.9)
-    T = per * 2 * HALF
+    T = per * 2 * HALF; st = dict(t=0.0, P=P0)
     def frame(i):
         t = T * i / (nfr - 1); ax.clear()
+        if t > st['t']:  # advance every set from st['t'] to t (piecewise-steady protocol)
+            new = []
+            for X, Y in st['P']:
+                s0 = st['t']
+                while s0 < t - 1e-12:
+                    k = int(np.floor(s0 / HALF + 1e-9)); end = min((k + 1) * HALF, t)
+                    X, Y = flow_seg(X, Y, -1.0 if k % 2 == 0 else 1.0, end - s0); s0 = end
+                new.append((X, Y))
+            st['P'] = new; st['t'] = t
         rgb = np.ones((200, 600, 3))
-        for (X0, Y0), c in zip(P0, cols):
-            X, Y = flow_t(X0.copy(), Y0.copy(), HALF, t, 100.0)
+        for (X, Y), c in zip(st['P'], cols):
             H = render(g, X, Y) > 0
             for ch in range(3): rgb[..., ch][H] = c[ch]
         ax.imshow(rgb, origin='lower', extent=(0, A, -B, B), aspect='equal', interpolation='nearest')
-        top = 'top lid -> right, bottom <-' if (t % (2 * HALF)) < HALF else 'lids reversed (U1 = +1)'
-        ax.set_title(f'lid-driven cavity, t = {t / (2 * HALF):.2f} ' + r'$\tau_f$' + f'   [{top}]', fontsize=9)
+        top = 'U1 = -1' if (t % (2 * HALF)) < HALF else 'U1 = +1 (lid reversed)'
+        ax.set_title(f'lid-driven cavity: three coherent sets and a non-coherent square (grey), t = {t / (2 * HALF):.2f} '
+                     + r'$\tau_f$' + f'   [{top}]', fontsize=9)
         ax.set_xticks([]); ax.set_yticks([])
     a = ma.FuncAnimation(fig, frame, frames=nfr)
     a.save(os.path.join(OUT, 'anim_cavity_coherent.mp4'), fps=24, dpi=120, writer='ffmpeg'); plt.close(fig)

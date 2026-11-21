@@ -2,5 +2,5 @@
 *.npy
 __pycache__/
 *.log
-out/sweep/
-out/lober_*/lobe*.dat*
+ross_tallapragada_2012/out/lober_*/lobe*.dat*
+ross_tallapragada_2012/out/CHAIN*

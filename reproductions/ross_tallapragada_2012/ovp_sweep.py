@@ -53,7 +53,7 @@ def flux_point(gam, eps, ds=0.004):
                 flux=out, flux_frac=out / R1.area, area_err=abs(F.area - R1.area), npip_axis=int(len(cr)))
 
 
-def separatrix(n=4000, T=12.0):
+def separatrix(n=30000, T=30.0):
     """Unperturbed upper separatrix from +sqrt(3) to -sqrt(3), parametrised by time (t = 0 at x = 0)."""
     from scipy.integrate import solve_ivp
     def f(t, z):
@@ -68,7 +68,7 @@ def separatrix(n=4000, T=12.0):
     return np.r_[-t[::-1], t[1:]], np.vstack([bw[::-1], fw[1:]]), ytop
 
 
-def melnikov(gam, nt0=256, d=1e-6):
+def melnikov(gam, nt0=128, d=1e-6):
     ts, Q, _ = separatrix()
     f0 = np.array([O.vel(x, y, 0.0, 0.0, gam) for x, y in Q])
     t0s = np.linspace(0, 2 * np.pi * gam, nt0, endpoint=False); M = []
@@ -137,6 +137,42 @@ def stage_plot():
     axs[1].axhline(1, color='k', ls='--', lw=.8); axs[1].set_yscale('log')
     axs[1].set_xlabel(r'$\gamma$'); axs[1].set_ylabel('true flux / Melnikov prediction')
     fig.tight_layout(); fig.savefig(os.path.join(HERE, 'out', 'ovp_sweep_flux.png'), dpi=160); plt.close(fig)
+
+
+
+def stage_minimum():
+    rows = [json.load(open(f)) for f in glob.glob(os.path.join(OUT, 'pt_*.json'))]
+    mel = json.load(open(os.path.join(OUT, 'melnikov.json')))
+    gm = np.array([r['gamma'] for r in mel]); am = np.array([r['area_per_eps'] for r in mel])
+    k = np.argmin(np.where(gm > 1.5, am, np.inf)); g0 = gm[k]  # coarse Melnikov zero; refine
+    from scipy.optimize import minimize_scalar
+    g0 = minimize_scalar(lambda g: melnikov(g, nt0=128)[2], bounds=(g0 - 0.05, g0 + 0.05), method='bounded', options=dict(xatol=1e-4)).x
+    E, G, F, NP = [], [], [], []
+    for e in EPSS:
+        rr = sorted([r for r in rows if abs(r['eps'] - e) < 1e-9 and 'flux' in r and r['gamma'] > 0.9], key=lambda r: r['gamma'])
+        g = np.array([r['gamma'] for r in rr]); f = np.array([r['flux'] for r in rr]); i = np.argmin(f)
+        c = np.polyfit(g[i - 3:i + 4] - g[i], f[i - 3:i + 4], 2); gs = g[i] - c[1] / (2 * c[0])
+        E.append(e); G.append(gs); F.append(np.polyval(c, gs - g[i])); NP.append(rr[i]['npip_axis'])
+    E, G, F = map(np.array, (E, G, F))
+    pg = np.polyfit(E[:4], G[:4], 1); pf = np.polyfit(E[:4], F[:4] / E[:4] ** 2, 1)
+    res = dict(melnikov_zero=float(g0), eps=E.tolist(), gamma_star=G.tolist(), min_flux=F.tolist(), npips_axis=NP,
+               fit_gamma_star=pg.tolist(), fit_flux_over_eps2=pf.tolist())
+    json.dump(res, open(os.path.join(HERE, 'out', 'ovp_minimum.json'), 'w'), indent=1); print(json.dumps(res, indent=1))
+    fig, axs = plt.subplots(1, 2, figsize=(11, 4))
+    axs[0].plot(E, G, 'o-', label=r'$\gamma^*(\epsilon)$: forcing period of least transport')
+    axs[0].axhline(g0, color='k', ls='--', lw=.8, label=fr'Melnikov zero, $\gamma_0$ = {g0:.4f}')
+    axs[0].set_xlabel(r'$\epsilon$'); axs[0].set_ylabel(r'$\gamma$'); axs[0].legend(fontsize=8)
+    axs[1].plot(E, F / E ** 2, 'o-', label='true flux at $\\gamma^*$')
+    fz = [flux_at(g0, e, rows) for e in E]
+    axs[1].plot(E, np.array(fz) / E ** 2, 's--', label=r'true flux at the Melnikov zero $\gamma_0$')
+    axs[1].set_xlabel(r'$\epsilon$'); axs[1].set_ylabel(r'one-period flux / $\epsilon^2$'); axs[1].legend(fontsize=8)
+    axs[1].set_ylim(0, None)
+    fig.tight_layout(); fig.savefig(os.path.join(HERE, 'out', 'ovp_minimum.png'), dpi=160); plt.close(fig)
+
+
+def flux_at(g, e, rows):
+    rr = sorted([r for r in rows if abs(r['eps'] - e) < 1e-9 and 'flux' in r], key=lambda r: r['gamma'])
+    return np.interp(g, [r['gamma'] for r in rr], [r['flux'] for r in rr])
 
 
 if __name__ == '__main__':
