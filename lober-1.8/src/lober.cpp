@@ -197,6 +197,7 @@ int stat_is_inside(void) {
     printf("LOBER: Abnormal termination!\n");
     exit(1);
   }
+  return 0;
 }
 
 int main(int narg, char *arg[]) {

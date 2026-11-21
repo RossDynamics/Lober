@@ -1,0 +1,6 @@
+*.npz
+*.npy
+__pycache__/
+*.log
+out/sweep/
+out/lober_*/lobe*.dat*
