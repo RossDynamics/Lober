@@ -261,6 +261,38 @@ def stage_anim(nper=int(os.environ.get('OVP_ANIM_PER', 4)), fpp=48):
     a.save(os.path.join(OUT, f'anim_ovp_species_{TAG}.mp4'), fps=24, dpi=110, writer='ffmpeg'); plt.close(fig)
 
 
+def stage_anim_x(nper=int(os.environ.get('OVP_ANIM_PER', 4)), fpp=60, theme=os.environ.get('OVP_THEME', 'dark')):
+    """Tightly cropped, title-free version of stage_anim for social media (1080 x 1080, H.264)."""
+    import matplotlib.animation as ma
+    th = dict(dark=dict(bg='#0b1016', fluid='#3fa7ff', wu='#ff5a4e', ws='#e8edf2', vort='#ffb020', txt='#8fa0ad'),
+              light=dict(bg='#ffffff', fluid='#1f2bd0', wu='#d7261e', ws='#111111', vort='#f39c12', txt='#55646f'))[theme]
+    pR, Wu = manifolds(); q, i, upper, poly = region_R1(pR, Wu)
+    s_ = np.cumsum(np.r_[0, np.hypot(*np.diff(Wu, axis=0).T)]); U = Wu[s_ <= 12.0]; Sm = refl_x(U)
+    Us = U[::2]; Ss = Sm[::2]; phases = np.arange(fpp) * o.Tp / fpp; WU, WS = [], []
+    for ph in phases:
+        n = max(2, int(o.steps * ph / o.Tp))
+        X, Y = flow_many(Us[:, 0].copy(), Us[:, 1].copy(), 0.0, ph, n, EPS, GAM); WU.append(np.c_[X, Y])
+        n = max(2, int(o.steps * (o.Tp - ph) / o.Tp))
+        X, Y = flow_many(Ss[:, 0].copy(), Ss[:, 1].copy(), o.Tp, ph - o.Tp, n, EPS, GAM); WS.append(np.c_[X, Y])
+    fig = plt.figure(figsize=(6, 6), facecolor=th['bg']); ax = fig.add_axes([0, 0, 1, 1]); ax.set_facecolor(th['bg'])
+    st = dict(P=poly.copy(), t=0.0)
+    def frame(k):
+        t = k * o.Tp / fpp
+        if k > 0:
+            st['P'] = advect_poly(st['P'], T=t - st['t'], t0=st['t'], ds=0.008, maxpts=1_500_000); st['t'] = t
+        ax.clear(); ax.set_facecolor(th['bg']); P = st['P']; j = k % fpp
+        ax.fill(P[:, 0], P[:, 1], color=th['fluid'], lw=0, alpha=.92)
+        for W, c, lw in ((WS[j], th['ws'], .6), (WU[j], th['wu'], .8)):
+            for M in (W, refl_y(W)): ax.plot(M[:, 0], M[:, 1], color=c, lw=lw, alpha=.9)
+        yv = np.exp(EPS * (np.cos(t / GAM) - 1)); ax.plot([0, 0], [yv, -yv], 'o', ms=5, color=th['vort'])
+        ax.set_xlim(-2.95, 2.25); ax.set_ylim(-2.6, 2.6); ax.set_aspect('equal'); ax.axis('off')
+        ax.text(0.03, 0.03, f't = {t / o.Tp:.2f} T', transform=ax.transAxes, color=th['txt'], fontsize=9, family='monospace')
+    a = ma.FuncAnimation(fig, frame, frames=nper * fpp + 1)
+    a.save(os.path.join(OUT, f'x_ovp_species_{theme}.mp4'), fps=30, dpi=180, writer='ffmpeg',
+           savefig_kwargs=dict(facecolor=th['bg']), extra_args=['-vcodec', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18'])
+    plt.close(fig)
+
+
 if __name__ == '__main__':
     stages = sys.argv[1:] or ['mani', 'ftle', 'lober', 'species', 'mc']
     for s in stages:
