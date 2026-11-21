@@ -143,10 +143,10 @@ def ls_step(phi, t, dt, umax, dx, nx, ny):
     return out
 
 
-def zermelo(start, target, umax, t0=0.0, nx=801, tmax=30.0, keep_every=10):
+def zermelo(start, target, umax, t0=0.0, nx=401, tmax=30.0, keep_dt=0.02):
     dx = 2 / (nx - 1); ny = (nx - 1) // 2 + 1
     x = np.linspace(0, 2, nx); y = np.linspace(0, 1, ny); Xg, Yg = np.meshgrid(x, y)
-    phi = np.hypot(Xg - start[0], Yg - start[1]) - 0.01
+    phi = np.hypot(Xg - start[0], Yg - start[1]) - 0.03
     tgt = (np.abs(Xg - target[0]) <= target[2]) & (np.abs(Yg - target[1]) <= target[3])
     vmax = np.pi * AMP * (1 + 2 * EPS) * 1.6 + umax; dt = 0.45 * dx / vmax
     t = t0; snaps = [(t, phi.copy())]; k = 0
@@ -154,7 +154,7 @@ def zermelo(start, target, umax, t0=0.0, nx=801, tmax=30.0, keep_every=10):
         phi = ls_step(phi, t, dt, umax, dx, nx, ny); t += dt; k += 1
         if k % 50 == 0:  # reinitialise-lite: keep phi a bounded signed function
             phi = np.clip(phi, -0.2, 0.2)
-        if k % keep_every == 0: snaps.append((t, phi.copy()))
+        if t - snaps[-1][0] >= keep_dt: snaps.append((t, phi.astype(np.float32)))
         if (phi[tgt] <= 0).any():
             snaps.append((t, phi.copy())); break
     return x, y, snaps, t - t0
@@ -173,7 +173,7 @@ def backtrack(x, y, snaps, target, umax):
         t1, ph = snaps[k]; t0, _ = snaps[k - 1]
         gy, gx = np.gradient(ph, y, x)
         Gx = RGI((y, x), gx, bounds_error=False, fill_value=0); Gy = RGI((y, x), gy, bounds_error=False, fill_value=0)
-        n = 4; h = (t1 - t0) / n
+        n = 8; h = (t1 - t0) / n
         for s in range(n):
             tt = t1 - s * h
             g = np.array([Gx((p[1], p[0])), Gy((p[1], p[0]))]).ravel(); g /= (np.linalg.norm(g) + 1e-15)
@@ -196,6 +196,39 @@ def stage_zermelo():
                             t=np.array([s[0] for s in snaps])[::5], phi=np.array([s[1] for s in snaps])[::5].astype(np.float32),
                             path=path)
     json.dump({str(k): dict(Tstar=v['Tstar']) for k, v in res.items()}, open(os.path.join(OUT, 'dg_zermelo.json'), 'w'), indent=1)
+
+
+def stage_zplot(umax=0.05):
+    """The optimal path over the attracting LCS (backward FTLE, T = -5) at four times, the reachable sets, and a movie."""
+    import matplotlib.animation as ma
+    d = np.load(os.path.join(OUT, f'dg_zermelo_{umax:g}.npz')); x, y, ts, phis, path = d['x'], d['y'], d['t'], d['phi'], d['path']
+    start = (0.15, 0.85); tgt = (1.0, 0.06, 0.08, 0.06); Tstar = path[-1, 0]
+    def ftle_b(t): return ftle_grid(-5.0, t0=t, nx=500, ny=250)[2]
+    fig, axs = plt.subplots(2, 2, figsize=(12, 6.4))
+    for ax, frac in zip(axs.ravel(), (0.0, 0.33, 0.66, 1.0)):
+        t = frac * Tstar; F = ftle_b(t)
+        ax.imshow(F, origin='lower', extent=(0, 2, 0, 1), cmap='gray_r', vmin=0, vmax=np.percentile(F, 99))
+        k = np.argmin(np.abs(ts - t)); ax.contour(x, y, phis[k], [0], colors='tab:orange', linewidths=1)
+        m = path[:, 0] <= t + 1e-9
+        ax.plot(path[:, 1], path[:, 2], color='tab:green', lw=.8, alpha=.35); ax.plot(path[m, 1], path[m, 2], color='tab:green', lw=2)
+        ax.plot(*start, 'ko', ms=5); ax.add_patch(plt.Rectangle((tgt[0] - tgt[2], tgt[1] - tgt[3]), 2 * tgt[2], 2 * tgt[3], fc='none', ec='tab:red'))
+        ax.set_title(f't = {t:.2f}   (optimal arrival {Tstar:.2f})', fontsize=9); ax.set_xticks([]); ax.set_yticks([])
+    fig.suptitle(fr'minimum-time path of a vehicle with speed $\leq$ {umax:g} (flow speed up to 1.2): green; reachable set: orange; grey: attracting LCS', fontsize=10)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, f'dg_zermelo_{umax:g}.png'), dpi=150); plt.close(fig)
+    # movie
+    fig, ax = plt.subplots(figsize=(8, 4.3)); fig.subplots_adjust(0.01, 0.01, 0.99, 0.92)
+    fr = np.linspace(0, Tstar, 150)
+    def frame(i):
+        t = fr[i]; ax.clear(); F = ftle_b(t)
+        ax.imshow(F, origin='lower', extent=(0, 2, 0, 1), cmap='gray_r', vmin=0, vmax=np.percentile(F, 99))
+        k = np.argmin(np.abs(ts - t)); ax.contour(x, y, phis[k], [0], colors='tab:orange', linewidths=1)
+        m = path[:, 0] <= t + 1e-9; ax.plot(path[m, 1], path[m, 2], color='tab:green', lw=2)
+        p = np.array([np.interp(t, path[:, 0], path[:, 1]), np.interp(t, path[:, 0], path[:, 2])]); ax.plot(*p, 'o', color='tab:green', ms=6)
+        ax.plot(*start, 'ko', ms=5); ax.add_patch(plt.Rectangle((tgt[0] - tgt[2], tgt[1] - tgt[3]), 2 * tgt[2], 2 * tgt[3], fc='none', ec='tab:red'))
+        ax.set_xlim(0, 2); ax.set_ylim(0, 1); ax.set_xticks([]); ax.set_yticks([])
+        ax.set_title(f'double gyre, vehicle speed <= {umax:g}:  t = {t:.2f} / {Tstar:.2f}', fontsize=9)
+    ma.FuncAnimation(fig, frame, frames=len(fr)).save(os.path.join(OUT, f'anim_dg_zermelo_{umax:g}.mp4'), fps=20, dpi=110, writer='ffmpeg')
+    plt.close(fig)
 
 
 if __name__ == '__main__':
