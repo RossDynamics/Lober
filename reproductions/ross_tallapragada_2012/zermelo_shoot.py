@@ -118,9 +118,12 @@ def plots():
 if __name__ == '__main__':
     if sys.argv[1:] == ['plots']:
         plots(); sys.exit()
-    res = dict(passive=passive_time()); print('passive arrival', res['passive'], flush=True)
+    f0 = os.path.join(OUT, 'dg_shoot.json')
+    res = json.load(open(f0)) if os.path.exists(f0) else dict(passive=passive_time())
+    print('passive arrival', res['passive'], flush=True)
     Ts = np.round(np.arange(0.5, 12.01, 0.1), 2)
     for umax in [float(u) for u in (sys.argv[1:] or (0.2, 0.1, 0.05, 0.02, 0.01, 0.005))]:
+        if str(umax) in res: continue
         t = time.time(); Tstar = None
         for T in Ts:
             N = int(np.clip(round(T * 8), 8, 64))
