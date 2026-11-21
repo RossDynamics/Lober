@@ -61,3 +61,23 @@
 ## Sol:
 	Make the following changes to the test1.cpp, test2.cpp, test3.cpp, and test4.cpp
 	Change the main function's second argument to char **arg
+
+## ISSUE (Linux, g++ 13, Nov 2026): "Illegal instruction" right after "loading isInside library",
+## or with -O2 a false "libisInside 2.1.0 is not compatible with its 2.x interface"
+	stat_is_inside() in lober-1.8/src/lober.cpp is declared int but had no return statement.
+	Modern g++ treats falling off the end of a non-void function as undefined behaviour: at -O0
+	it traps (ud2, "Illegal instruction"), at -O2 it miscompiles the version test.
+
+## Sol:
+	Add "return 0;" at the end of stat_is_inside() (done in this repository).
+
+## ISSUE (Linux): libisInside link fails with ".libs/version.o: file not recognized"
+	The repository carries object files built on macOS (*.o, *.lo, .libs/).
+
+## Sol:
+	cd libisInside-2.1; find . -name "*.o" -o -name "*.lo" -o -name "*.la" | xargs rm -f; rm -rf src/libisInside/.libs
+	./configure --prefix=$HOME/local && make && make install     (the test programs may fail to link; the library installs)
+	cd ../lober-1.8; find . -name "*.o" | xargs rm -f; rm -f src/lober
+	CPLUS_INCLUDE_PATH=$HOME/local/include LIBRARY_PATH=$HOME/local/lib ./configure --prefix=$HOME/local && make
+	export LD_LIBRARY_PATH=$HOME/local/lib    (to run lober)
+	Check: in lober-1.8-test, "lober u.n s.n lobe.dat mani.dat pips.dat 0 0 1 lobeb.dat -BIP 17" ends with LOBER::DONE!
