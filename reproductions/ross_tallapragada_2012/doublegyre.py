@@ -231,6 +231,91 @@ def stage_zplot(umax=0.05):
     plt.close(fig)
 
 
+# ------------------------------------------------------------------ Zermelo by front tracking (Huygens)
+@njit(parallel=True, cache=True)
+def front_vel(P, nrm, t, umax):
+    V = np.empty_like(P)
+    for i in prange(P.shape[0]):
+        u, v = vel(P[i, 0], P[i, 1], t); V[i, 0] = u + umax * nrm[i, 0]; V[i, 1] = v + umax * nrm[i, 1]
+    return V
+
+
+def normals(P):
+    """Outward unit normals of a closed counter-clockwise polygon (no repeated end point)."""
+    T = np.roll(P, -1, 0) - np.roll(P, 1, 0); n = np.c_[T[:, 1], -T[:, 0]]
+    return n / (np.linalg.norm(n, axis=1, keepdims=True) + 1e-300)
+
+
+def clean(P, ds):
+    from shapely.geometry import Polygon, box
+    from shapely.ops import unary_union
+    g = Polygon(P).buffer(0).intersection(box(0, 0, 2, 1))
+    if g.geom_type != 'Polygon':
+        g = max(getattr(g, 'geoms', [g]), key=lambda q: q.area)
+    g = g.simplify(ds / 8)
+    Q = np.asarray(g.exterior.coords)[:-1]
+    if Polygon(Q).exterior.is_ccw is False: Q = Q[::-1]
+    # insert points where needed
+    d = np.hypot(*np.diff(np.vstack([Q, Q[:1]]), axis=0).T); k = np.maximum(1, np.ceil(d / ds).astype(int))
+    if k.max() > 1:
+        R = []
+        Qn = np.roll(Q, -1, 0)
+        for j in range(len(Q)):
+            s_ = np.arange(k[j])[:, None] / k[j]; R.append(Q[j] + s_ * (Qn[j] - Q[j]))
+        Q = np.vstack(R)
+    return Q, g.area
+
+
+def front_zermelo(start, target, umax, r0=0.03, dt=0.004, ds=0.004, tmax=40.0, keep_dt=0.02):
+    from shapely.geometry import Polygon, box
+    th = np.linspace(0, 2 * np.pi, 200, endpoint=False)
+    P = np.c_[start[0] + r0 * np.cos(th), start[1] + r0 * np.sin(th)]
+    tb = box(target[0] - target[2], target[1] - target[3], target[0] + target[2], target[1] + target[3])
+    t = 0.0; snaps = [(t, P.copy())]; areas = [(t, Polygon(P).area)]
+    while t < tmax:
+        n = normals(P); V1 = front_vel(P, n, t, umax); P1 = P + dt * V1
+        V2 = front_vel(P1, n, t + dt, umax); P = P + 0.5 * dt * (V1 + V2); t += dt
+        P, a = clean(P, ds)
+        if t - snaps[-1][0] >= keep_dt - 1e-12:
+            snaps.append((t, P.copy())); areas.append((t, a))
+        if Polygon(P).intersects(tb):
+            snaps.append((t, P.copy())); break
+    return snaps, t, areas
+
+
+def front_backtrack(snaps, target, umax):
+    """xdot = v_f + umax n, backwards from the first target point reached; n from the front at each time."""
+    from scipy.spatial import cKDTree
+    from shapely.geometry import box, Polygon
+    tf, Pf = snaps[-1]
+    tb = box(target[0] - target[2], target[1] - target[3], target[0] + target[2], target[1] + target[3])
+    inside = np.array([tb.contains(__import__('shapely.geometry', fromlist=['Point']).Point(p)) for p in Pf])
+    p = Pf[inside][0] if inside.any() else Pf[np.argmin([tb.distance(__import__('shapely.geometry', fromlist=['Point']).Point(q)) for q in Pf])]
+    path = [(tf, *p)]
+    for k in range(len(snaps) - 1, 0, -1):
+        t1, P1 = snaps[k]; t0, _ = snaps[k - 1]; n1 = normals(P1); tree = cKDTree(P1)
+        m = 4; h = (t1 - t0) / m
+        for s_ in range(m):
+            tt = t1 - s_ * h; j = tree.query(p)[1]; u, v = vel(p[0], p[1], tt)
+            p = np.clip(p - h * (np.array([u, v]) + umax * n1[j]), [0, 0], [2, 1])
+            P1n = P1  # snap the path onto the front (it lies on the boundary of the reachable set)
+        jj = cKDTree(snaps[k - 1][1]).query(p)[1]; p = 0.5 * p + 0.5 * snaps[k - 1][1][jj]
+        path.append((t0, *p))
+    return np.array(path[::-1])
+
+
+def stage_front():
+    start = (0.15, 0.85); target = (1.0, 0.06, 0.08, 0.06); res = {}
+    for umax in (0.2, 0.15, 0.1, 0.075, 0.05, 0.03, 0.02, 0.01, 0.005, 0.0025, 0.0):
+        t = time.time(); snaps, Tstar, areas = front_zermelo(start, target, umax, dt=0.002, ds=0.002)
+        path = front_backtrack(snaps, target, umax)
+        res[str(umax)] = dict(Tstar=Tstar, reached=Tstar < 40.0 - 1e-9)
+        print(f'front: umax {umax}: minimum time {Tstar:.3f}, {len(snaps)} snapshots, {time.time() - t:.0f}s', flush=True)
+        np.savez_compressed(os.path.join(OUT, f'dg_front_{umax:g}.npz'), t=np.array([s[0] for s in snaps]),
+                            fronts=np.array([s[1] for s in snaps], dtype=object), path=path, areas=np.array(areas), allow_pickle=True)
+        json.dump(res, open(os.path.join(OUT, 'dg_front.json'), 'w'), indent=1)
+
+
 if __name__ == '__main__':
     for s in sys.argv[1:] or ['ftle', 'cov', 'P']:
         t = time.time(); globals()['stage_' + s](); print(f'== {s} {time.time() - t:.1f}s', flush=True)
